@@ -1,17 +1,17 @@
+import csv
+import warnings
 from collections.abc import Iterable
 from itertools import batched
-import warnings
-import numpy as np
-from numpy.typing import NDArray
-import csv
-import pygame
-from PIL import Image
 
+import numpy as np
+import pygame
+from numpy.typing import NDArray
+from PIL import Image
 
 # Inspred by 3blue1brown's series on neural networks
 # https://www.3blue1brown.com/topics/neural-networks
 
-np.set_printoptions(suppress=True)
+np.set_printoptions(suppress=True, threshold=np.inf)
 warnings.simplefilter("error")
 
 
@@ -19,31 +19,38 @@ def sigmoid(x: NDArray[np.float64]) -> NDArray[np.float64]:
   return 1.0 / (1.0 + np.exp(-x))
 
 
-# # Derivative of sigmoid function
+# Derivative of sigmoid function
 def sigmoid_prime(x: NDArray[np.float64]) -> NDArray[np.float64]:
   return sigmoid(x) * (1 - sigmoid(x))
 
 
+def quantize(x: float, amax: float, scale: float) -> np.int8:
+  return np.clip(round(x / scale), -127, 127)
+
+
 class NeuralNetwork:
   weights: list[NDArray[np.float64]] = [
-    np.zeros((16, 784)),
-    np.zeros((16, 16)),
-    np.zeros((10, 16)),
+    np.zeros((10, 784)),
+    np.zeros((14, 10)),
+    np.zeros((10, 14)),
   ]
   biases: list[NDArray[np.float64]] = [
-    np.zeros(16),
-    np.zeros(16),
+    np.zeros(10),
+    np.zeros(14),
     np.zeros(10),
   ]
   eta: float = 0
   sizes: list[int] = []
 
   def __init__(self, eta: float = 10):
-    self.sizes = [784, 16, 16, 10]
+    self.sizes = [784, 10, 14, 10]
+    # 784 * 10 + 10 * 14 + 14 * 10 = 8120 weights,
+    # 10 + 14 + 10 = 34 biases
+    # which makes for 8154 parameters
 
-    self.biases = [np.random.randn(y) * 0.01 for y in self.sizes[1:]]
+    self.biases = [np.random.randn(y) for y in self.sizes[1:]]
     self.weights = [
-      np.random.randn(y, x) * np.sqrt(1 / x)
+      np.random.randn(y, x) / np.sqrt(x)
       for x, y in zip(self.sizes[:-1], self.sizes[1:])
     ]
 
@@ -51,7 +58,7 @@ class NeuralNetwork:
 
     self.eta = eta
 
-  def update(self, mini_batch: Iterable[list[str]]):
+  def update(self, mini_batch: Iterable[list[str]], lmbda: float):
     nabla_w = [np.zeros(w.shape) for w in self.weights]
     nabla_b = [np.zeros(b.shape) for b in self.biases]
 
@@ -71,7 +78,8 @@ class NeuralNetwork:
       nabla_b = [nb + dnb for dnb, nb in zip(delta_nabla_b, nabla_b)]
 
     self.weights = [
-      w - (self.eta / batch_size) * nw for w, nw in zip(self.weights, nabla_w)
+      (1 - self.eta * (lmbda / 60000)) * w - (self.eta / 10) * nw
+      for w, nw in zip(self.weights, nabla_w)
     ]
     self.biases = [
       b - (self.eta / batch_size) * nb for b, nb in zip(self.biases, nabla_b)
@@ -108,6 +116,7 @@ class NeuralNetwork:
 
     return (nabla_w, nabla_b)
 
+  # TODO: write in pico8
   def feedforward(self, a: NDArray[np.float64]):
     for b, w in zip(self.biases, self.weights):
       a = sigmoid(np.dot(w, a) + b)
@@ -123,14 +132,18 @@ class NeuralNetwork:
 def main():
   print("Hello from nn!")
 
-  nn = NeuralNetwork()
+  nn = NeuralNetwork(eta=6)
 
   with open("mnist_train.csv", "r") as csvfile:
     reader = csv.reader(csvfile)
-    mini_batches = batched(reader, 100)
+    mini_batches = batched(reader, 10)
     for i, mini_batch in enumerate(mini_batches):
       print("mini batch:", i)
-      nn.update(mini_batch)
+      nn.update(mini_batch, lmbda=7)
+
+  accuracy = 0
+
+  print("Training done.")
 
   with open("mnist_test.csv", "r") as csvfile:
     reader = csv.reader(csvfile)
@@ -142,49 +155,140 @@ def main():
       y[int(test[0])] = 1.0
       print_results(a, y)
       print_img(x)
+      accuracy += np.argmax(a) == int(test[0])
+
+  print("\n### TEST RESULTS ###\n")
+  print(f"Accuracy: {accuracy / 10000 * 100}%")
+
+  max_valw = max(layer.max() for layer in nn.weights)
+  min_valw = min(layer.min() for layer in nn.weights)
+  max_valb = max(layer.max() for layer in nn.biases)
+  min_valb = min(layer.min() for layer in nn.biases)
+
+  print(f"Weight max: {max_valw}")
+  print(f"Weight min: {min_valw}")
+  print(f"Weight mean: {[layer.mean() for layer in nn.weights]}")
+  print(f"Bias max: {max_valb}")
+  print(f"Bias min: {min_valb}")
+  print(f"Bias mean: {[layer.mean() for layer in nn.biases]}")
+
+  amaxw = max(max_valw, abs(min_valw))
+  amaxb = max(max_valb, abs(min_valb))
+
+  scalew = (2 * amaxw) / 256
+  scaleb = (2 * amaxb) / 256
+  print(f"Weight scale: {scalew}")
+  print(f"Bias scale: {scaleb}")
+
+  quantized = np.vectorize(quantize)
+  new_weights: list[NDArray[np.int8]] = [
+    quantized(layer, amaxw, scalew).astype(np.int8) for layer in nn.weights
+  ]
+  new_biases: list[NDArray[np.int8]] = [
+    quantized(layer, amaxb, scaleb).astype(np.int8) for layer in nn.biases
+  ]
+
+  print(nn.weights[0])
+  print(nn.biases[0])
+
+  nn.weights = [layer.astype(np.float64) * scalew for layer in new_weights]
+  nn.biases = [layer.astype(np.float64) * scaleb for layer in new_biases]
+
+  new_accuracy = 0
+
+  with open("mnist_test.csv", "r") as csvfile:
+    reader = csv.reader(csvfile)
+    for test in reader:
+      x = np.array([float(n) / 255 for n in test[1::]], dtype=np.float64)
+      a = nn.feedforward(x)
+      y = np.zeros(10, dtype=np.float64)
+      y[int(test[0])] = 1.0
+      new_accuracy += np.argmax(a) == int(test[0])
+
+  print("\n### QUANTIZED TEST RESULTS ###\n")
+  print(f"Accuracy: {new_accuracy / 10000 * 100}%")
+
+  with open("untitled.p8", "r") as f:
+    data = f.readlines()
+
+  data[4] = f"scale = {scalew}\n"
+  data[5] = f"scale = {scaleb}\n"
+
+  flattened = np.concatenate(
+    [layer.flatten() for layer in new_weights + new_biases], axis=None
+  )
+  print("Flattened weights shape:", flattened.shape)
+
+  print("Flattened weights shape:", flattened)
+  with open("untitled.p8", "w") as f:
+    _ = f.writelines(data)
+
+  with open("untitled.p8", "a") as f:
+    # _ = f.truncate(f.tell() - 16437)
+    for i, p in enumerate(flattened):
+      if i % 64 == 0:
+        _ = f.write("\n")
+      _ = f.write(f"{int(np.binary_repr(p, width=8), 2):02x}")
+
+  # just to be sure
+  print(f"{flattened[0]}")
+  print(f"{flattened[0]}")
+
+  decoded = np.astype(flattened[0], np.int8) * scalew
+  print(f"Decoded: {decoded}")
 
   # User input
-  print("#### USER INPUT ###")
-  print("Press ENTER to draw a digit, BACKSPACE to clear the screen.")
-  _ = pygame.init()
-  screen = pygame.display.set_mode((800, 800))  # 28 times 36
-  pygame.display.set_caption("Neural Network")
-  clock = pygame.time.Clock()
-  running = True
+  # print("#### USER INPUT ###")
+  # print("Press ENTER to draw a digit, BACKSPACE to clear the screen.")
+  # _ = pygame.init()
+  # screen = pygame.display.set_mode((800, 800))
+  # drawn = pygame.Surface((800, 800))  # 28 times 36
+  # pygame.display.set_caption("Neural Network")
+  # clock = pygame.time.Clock()
+  # running = True
+  # font = pygame.font.Font(None, 40)
+  # guess = None
+  #
+  # while running:
+  #   for event in pygame.event.get():
+  #     if event.type == pygame.QUIT:
+  #       running = False
+  #     if event.type == pygame.KEYDOWN:
+  #       if event.key == pygame.K_BACKSPACE:
+  #         _ = drawn.fill("black")
+  #         guess = None
+  #       if event.key == pygame.K_RETURN:
+  #         img_array = get_surface_array(drawn) / 255
+  #         print_img(img_array)
+  #         a = nn.feedforward(img_array)
+  #         guess = np.argmax(a)
+  #         print_results(a * 100)
+  #
+  #   button = pygame.mouse.get_pressed()[0]
+  #   if button:
+  #     x, y = pygame.mouse.get_pos()
+  #     _ = pygame.draw.circle(drawn, "white", (x, y), 40)
+  #
+  #   text = font.render(f"Guess: {guess}", True, "white")
+  #   text_pos = text.get_rect(bottom=0, top=drawn.get_height() - 50)
+  #
+  #   _ = screen.blit(drawn)
+  #   _ = screen.blit(text, text_pos)
+  #
+  #   pygame.display.flip()
+  #
+  #   _ = clock.tick(60)
+  #
+  # pygame.quit()
 
-  while running:
-    for event in pygame.event.get():
-      if event.type == pygame.QUIT:
-        running = False
-      if event.type == pygame.KEYDOWN:
-        if event.key == pygame.K_BACKSPACE:
-          _ = screen.fill("black")
-        if event.key == pygame.K_RETURN:
-          img_array = get_screen_array(screen) / 255
-          print_img(img_array)
-          a = nn.feedforward(img_array)
-          print_results(a)
 
-    button = pygame.mouse.get_pressed()[0]
-    if button:
-      x, y = pygame.mouse.get_pos()
-      _ = pygame.draw.circle(screen, "white", (x, y), 35)
-
-    pygame.display.flip()
-
-    _ = clock.tick(20000)
-
-  pygame.quit()
-
-
-def get_screen_array(screen: pygame.Surface):
+def get_surface_array(screen: pygame.Surface):
   data = pygame.surfarray.array3d(screen)
   data = np.transpose(data, (1, 0, 2))
   img = Image.fromarray(data)
   img = img.convert("L")
   img = img.resize((28, 28), Image.Resampling.LANCZOS)
   img_array = np.asarray(img).ravel()
-  print(img_array.shape)
   return img_array
 
 
@@ -201,11 +305,10 @@ def print_img(x: NDArray[np.float64]):
 
 
 def print_results(x: NDArray[np.float64], y: NDArray[np.float64] | None = None):
-  if y is None:
-    print(np.column_stack((np.arange(10), np.round(x, 2))))
-    return
-
-  print(np.column_stack((np.arange(10), y, np.round(x, 2))))
+  data = [np.arange(10), np.round(x, 2)]
+  if y is not None:
+    data.insert(1, y)
+  print(np.column_stack(data))
 
 
 if __name__ == "__main__":
