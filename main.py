@@ -24,7 +24,7 @@ def sigmoid_prime(x: NDArray[np.float64]) -> NDArray[np.float64]:
   return sigmoid(x) * (1 - sigmoid(x))
 
 
-def quantize(x: float, amax: float, scale: float) -> np.int8:
+def quantize(x: float, scale: float) -> np.int8:
   return np.clip(round(x / scale), -127, 127)
 
 
@@ -182,10 +182,10 @@ def main():
 
   quantized = np.vectorize(quantize)
   new_weights: list[NDArray[np.int8]] = [
-    quantized(layer, amaxw, scalew).astype(np.int8) for layer in nn.weights
+    quantized(layer, scalew).astype(np.int8) for layer in nn.weights
   ]
   new_biases: list[NDArray[np.int8]] = [
-    quantized(layer, amaxb, scaleb).astype(np.int8) for layer in nn.biases
+    quantized(layer, scaleb).astype(np.int8) for layer in nn.biases
   ]
 
   print(nn.weights[0])
@@ -200,6 +200,7 @@ def main():
     reader = csv.reader(csvfile)
     for test in reader:
       x = np.array([float(n) / 255 for n in test[1::]], dtype=np.float64)
+      print(f"x: {test[1::]}")
       a = nn.feedforward(x)
       y = np.zeros(10, dtype=np.float64)
       y[int(test[0])] = 1.0
@@ -211,8 +212,8 @@ def main():
   with open("untitled.p8", "r") as f:
     data = f.readlines()
 
-  data[4] = f"scale = {scalew}\n"
-  data[5] = f"scale = {scaleb}\n"
+  data[4] = f"scalew = {scalew}\n"
+  data[5] = f"scaleb = {scaleb}\n"
 
   flattened = np.concatenate(
     [layer.flatten() for layer in new_weights + new_biases], axis=None
@@ -224,7 +225,7 @@ def main():
     _ = f.writelines(data)
 
   with open("untitled.p8", "a") as f:
-    # _ = f.truncate(f.tell() - 16437)
+    _ = f.truncate(f.tell() - 16437)
     for i, p in enumerate(flattened):
       if i % 64 == 0:
         _ = f.write("\n")
