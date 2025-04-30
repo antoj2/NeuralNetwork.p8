@@ -116,7 +116,6 @@ class NeuralNetwork:
 
     return (nabla_w, nabla_b)
 
-  # TODO: write in pico8
   def feedforward(self, a: NDArray[np.float64]):
     for b, w in zip(self.biases, self.weights):
       a = sigmoid(np.dot(w, a) + b)

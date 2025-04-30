@@ -73,7 +73,6 @@ function feedforward(a)
 	for i=1, #size-1 do
 		local z = dot(weights[i], a)
 		for j=1, #z do
-			-- TODO: add bias
 			z[j] = sigmoid(z[j] + biases[i][j])
 		end
 		a = z
