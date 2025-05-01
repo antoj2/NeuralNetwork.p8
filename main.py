@@ -77,9 +77,12 @@ class NeuralNetwork:
       nabla_w = [nw + dnw for dnw, nw in zip(delta_nabla_w, nabla_w)]
       nabla_b = [nb + dnb for dnb, nb in zip(delta_nabla_b, nabla_b)]
 
+    # self.weights = [
+    #   (1 - self.eta * (lmbda / 60000)) * w - (self.eta / 10) * nw
+    #   for w, nw in zip(self.weights, nabla_w)
+    # ]
     self.weights = [
-      (1 - self.eta * (lmbda / 60000)) * w - (self.eta / 10) * nw
-      for w, nw in zip(self.weights, nabla_w)
+      w - (self.eta / batch_size) * nw for w, nw in zip(self.weights, nabla_w)
     ]
     self.biases = [
       b - (self.eta / batch_size) * nb for b, nb in zip(self.biases, nabla_b)
@@ -112,7 +115,7 @@ class NeuralNetwork:
         np.atleast_2d(delta).T, np.atleast_2d(activations[-layer - 1])
       )
 
-    print_results(activations[-1], y)
+    # print_results(activations[-1], y)
 
     return (nabla_w, nabla_b)
 
@@ -131,14 +134,19 @@ class NeuralNetwork:
 def main():
   print("Hello from nn!")
 
-  nn = NeuralNetwork(eta=6)
+  nn = NeuralNetwork(eta=8)
+
+  epochs = 30
 
   with open("mnist_train.csv", "r") as csvfile:
-    reader = csv.reader(csvfile)
-    mini_batches = batched(reader, 10)
-    for i, mini_batch in enumerate(mini_batches):
-      print("mini batch:", i)
-      nn.update(mini_batch, lmbda=7)
+    for epoch in range(epochs):
+      print("Epoch:", epoch)
+      _ = csvfile.seek(0)
+      reader = csv.reader(csvfile)
+      mini_batches = batched(reader, 64)
+      for i, mini_batch in enumerate(mini_batches):
+        print("mini batch:", i)
+        nn.update(mini_batch, lmbda=0.1)
 
   accuracy = 0
 
@@ -199,7 +207,6 @@ def main():
     reader = csv.reader(csvfile)
     for test in reader:
       x = np.array([float(n) / 255 for n in test[1::]], dtype=np.float64)
-      print(f"x: {test[1::]}")
       a = nn.feedforward(x)
       y = np.zeros(10, dtype=np.float64)
       y[int(test[0])] = 1.0
@@ -211,15 +218,15 @@ def main():
   with open("untitled.p8", "r") as f:
     data = f.readlines()
 
-  data[4] = f"scalew = {scalew}\n"
-  data[5] = f"scaleb = {scaleb}\n"
+  data[3] = f"scalew = {scalew}\n"
+  data[4] = f"scaleb = {scaleb}\n"
 
   flattened = np.concatenate(
     [layer.flatten() for layer in new_weights + new_biases], axis=None
   )
   print("Flattened weights shape:", flattened.shape)
 
-  print("Flattened weights shape:", flattened)
+  # print("Flattened weights shape:", flattened)
   with open("untitled.p8", "w") as f:
     _ = f.writelines(data)
 
