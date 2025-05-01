@@ -164,6 +164,8 @@ function _init()
 	guess = nil
 	sm = {0,0,0,0,0,0,0,0,0,0}
 	a = {0,0,0,0,0,0,0,0,0,0}
+	cur_time = 0
+	time_spent = 0
 end
 
 function _update()
@@ -205,7 +207,6 @@ end
 
 function _draw()
 	cls()
-
 
 	local g = "guess"
 	for i=1, #g do
