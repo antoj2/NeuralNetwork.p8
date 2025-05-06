@@ -218,8 +218,8 @@ def main():
   with open("untitled.p8", "r") as f:
     data = f.readlines()
 
-  data[3] = f"scalew = {scalew}\n"
-  data[4] = f"scaleb = {scaleb}\n"
+  data[6] = f"scalew = {scalew}\n"
+  data[7] = f"scaleb = {scaleb}\n"
 
   flattened = np.concatenate(
     [layer.flatten() for layer in new_weights + new_biases], axis=None
