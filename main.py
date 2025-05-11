@@ -3,75 +3,76 @@ import warnings
 from collections.abc import Iterable
 from itertools import batched
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pygame
-from numpy.typing import NDArray
+from jax import Array, random
+
+# from numpy.typing import NDArray
 from PIL import Image
 
 # Inspred by 3blue1brown's series on neural networks
 # https://www.3blue1brown.com/topics/neural-networks
 
-np.set_printoptions(suppress=True, threshold=np.inf)
+# np.set_printoptions(suppress=True, threshold=np.inf)
 warnings.simplefilter("error")
 
 
-def sigmoid(x: NDArray[np.float64]) -> NDArray[np.float64]:
-  return 1.0 / (1.0 + np.exp(-x))
+def sigmoid(x: Array) -> Array:
+  return 1.0 / (1.0 + jnp.exp(-x))
 
 
 # Derivative of sigmoid function
-def sigmoid_prime(x: NDArray[np.float64]) -> NDArray[np.float64]:
-  return sigmoid(x) * (1 - sigmoid(x))
+def sigmoid_prime(x: Array) -> Array:
+  sx = sigmoid(x)
+  return sx * (1 - sx)
 
 
-def quantize(x: float, scale: float) -> np.int8:
-  return np.clip(round(x / scale), -127, 127)
+# While NumPy defines scalar types for each dtype, JAX represents all scalars as a 0-d array.
+def quantize(x: float, scale: float) -> Array:
+  return jnp.clip(jnp.round(x / scale), -127, 127)
 
 
 class NeuralNetwork:
-  weights: list[NDArray[np.float64]] = [
-    np.zeros((10, 784)),
-    np.zeros((14, 10)),
-    np.zeros((10, 14)),
-  ]
-  biases: list[NDArray[np.float64]] = [
-    np.zeros(10),
-    np.zeros(14),
-    np.zeros(10),
-  ]
-  eta: float = 0
-  sizes: list[int] = []
+  weights: list[Array]
+  biases: list[Array]
+  eta: float
+  sizes: list[int]
 
-  def __init__(self, eta: float = 10):
+  def __init__(self, key: jax.Array, eta: float = 10):
     self.sizes = [784, 10, 14, 10]
     # 784 * 10 + 10 * 14 + 14 * 10 = 8120 weights,
     # 10 + 14 + 10 = 34 biases
     # which makes for 8154 parameters
 
-    self.biases = [np.random.randn(y) for y in self.sizes[1:]]
+    # self.biases = [np.random.randn(y) for y in self.sizes[1:]]
+    # self.weights = [
+    #   np.random.randn(y, x) / np.sqrt(x)
+    #   for x, y in zip(self.sizes[:-1], self.sizes[1:])
+    # ]
+    keys = random.split(key, 2 * (len(self.sizes) - 1))
+    self.biases = [
+      random.normal(keys[2 * i + 1], (self.sizes[i + 1],))
+      for i in range(len(self.sizes) - 1)
+    ]
     self.weights = [
-      np.random.randn(y, x) / np.sqrt(x)
-      for x, y in zip(self.sizes[:-1], self.sizes[1:])
+      random.normal(keys[2 * i], (self.sizes[i + 1], self.sizes[i]))
+      / jnp.sqrt(self.sizes[i])
+      for i in range(len(self.sizes) - 1)
     ]
 
     print(self.biases[0].shape)
 
     self.eta = eta
 
-  def update(self, mini_batch: Iterable[list[str]], lmbda: float):
-    nabla_w = [np.zeros(w.shape) for w in self.weights]
-    nabla_b = [np.zeros(b.shape) for b in self.biases]
+  def update(self, mini_batch: Iterable[list[str]], lmbda: float, batch_size: int):
+    nabla_w = [jnp.zeros_like(w) for w in self.weights]
+    nabla_b = [jnp.zeros_like(b) for b in self.biases]
 
-    rng = np.random.default_rng()
-    shuffled = list(mini_batch)
-    rng.shuffle(shuffled)
-
-    batch_size = len(shuffled)
-
-    for row in shuffled:
-      x = np.array([float(n) / 255 for n in row[1::]], dtype=np.float64)
-      y = np.zeros(10, dtype=np.float64)
-      y[int(row[0])] = 1.0
+    for row in mini_batch:
+      x = jnp.array([float(n) / 255 for n in row[1:]])
+      y = jnp.zeros(10).at[int(row[0])].set(1.0)
 
       delta_nabla_w, delta_nabla_b = self.backprop(x, y)
       nabla_w = [nw + dnw for dnw, nw in zip(delta_nabla_w, nabla_w)]
@@ -88,65 +89,64 @@ class NeuralNetwork:
       b - (self.eta / batch_size) * nb for b, nb in zip(self.biases, nabla_b)
     ]
 
-  def backprop(self, x: NDArray[np.float64], y: NDArray[np.float64]):
-    nabla_w: list[NDArray[np.float64]] = [np.zeros(w.shape) for w in self.weights]
-    nabla_b = [np.zeros(b.shape) for b in self.biases]
+  def backprop(self, x: Array, y: Array):
+    nabla_w = [jnp.zeros_like(w) for w in self.weights]
+    nabla_b = [jnp.zeros_like(b) for b in self.biases]
 
     activation = x
     activations = [x]
-    zs: list[NDArray[np.float64]] = []
+    zs: list[Array] = []
 
     for w, b in zip(self.weights, self.biases):
-      z: NDArray[np.float64] = np.dot(w, activation) + b
+      z = jnp.dot(w, activation) + b
       zs.append(z)
-      activation: NDArray[np.float64] = sigmoid(z)
+      activation = sigmoid(z)
       activations.append(activation)
 
     delta = self.cost_derivative(activations[-1], y) * sigmoid_prime(zs[-1])
     nabla_b[-1] = delta
-    nabla_w[-1] = np.dot(np.atleast_2d(delta).T, np.atleast_2d(activations[-2]))
+    nabla_w[-1] = jnp.outer(delta, activations[-2])
 
     for layer in range(2, len(self.sizes)):
       z = zs[-layer]
       sp = sigmoid_prime(z)
-      delta: NDArray[np.float64] = np.dot(self.weights[-layer + 1].T, delta) * sp
+      delta: Array = jnp.dot(self.weights[-layer + 1].T, delta) * sp
       nabla_b[-layer] = delta
-      nabla_w[-layer] = np.dot(
-        np.atleast_2d(delta).T, np.atleast_2d(activations[-layer - 1])
-      )
-
-    # print_results(activations[-1], y)
+      # nabla_w[-layer] = jnp.dot(
+      #   jnp.atleast_2d(delta).T, jnp.atleast_2d(activations[-layer - 1])
+      # )
+      nabla_w[-layer] = jnp.outer(delta, activations[-layer - 1])
 
     return (nabla_w, nabla_b)
 
-  def feedforward(self, a: NDArray[np.float64]):
+  def feedforward(self, a: Array):
     for b, w in zip(self.biases, self.weights):
-      a = sigmoid(np.dot(w, a) + b)
+      a = sigmoid(jnp.dot(w, a) + b)
     return a
 
   @staticmethod
-  def cost_derivative(
-    a: NDArray[np.float64], y: NDArray[np.float64]
-  ) -> NDArray[np.float64]:
+  def cost_derivative(a: Array, y: Array) -> Array:
     return a - y
 
 
 def main():
   print("Hello from nn!")
 
-  nn = NeuralNetwork(eta=8)
+  key = random.key(42)
+  nn = NeuralNetwork(key, eta=8)
 
   epochs = 30
+  batch_size = 64
 
   with open("mnist_train.csv", "r") as csvfile:
     for epoch in range(epochs):
       print("Epoch:", epoch)
       _ = csvfile.seek(0)
       reader = csv.reader(csvfile)
-      mini_batches = batched(reader, 64)
+      mini_batches = batched(reader, batch_size)
       for i, mini_batch in enumerate(mini_batches):
         print("mini batch:", i)
-        nn.update(mini_batch, lmbda=0.1)
+        nn.update(mini_batch, lmbda=0.1, batch_size=batch_size)
 
   accuracy = 0
 
@@ -187,11 +187,11 @@ def main():
   print(f"Weight scale: {scalew}")
   print(f"Bias scale: {scaleb}")
 
-  quantized = np.vectorize(quantize)
-  new_weights: list[NDArray[np.int8]] = [
+  quantized = jnp.vectorize(quantize)
+  new_weights: list[Array] = [
     quantized(layer, scalew).astype(np.int8) for layer in nn.weights
   ]
-  new_biases: list[NDArray[np.int8]] = [
+  new_biases: list[Array] = [
     quantized(layer, scaleb).astype(np.int8) for layer in nn.biases
   ]
 
@@ -299,7 +299,7 @@ def get_surface_array(screen: pygame.Surface):
   return img_array
 
 
-def print_img(x: NDArray[np.float64]):
+def print_img(x: Array):
   """Expects a 1D array of 784 elements (28x28 pixels) with values between 0 and 1,
   representing a grayscale image."""
   for row in batched(np.atleast_1d(x), 28):
@@ -311,7 +311,7 @@ def print_img(x: NDArray[np.float64]):
     print()
 
 
-def print_results(x: NDArray[np.float64], y: NDArray[np.float64] | None = None):
+def print_results(x: Array, y: Array | None = None):
   data = [np.arange(10), np.round(x, 2)]
   if y is not None:
     data.insert(1, y)
