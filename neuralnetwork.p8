@@ -7,8 +7,6 @@ __lua__
 scalew = 0.06287362800369398
 scaleb = 0.050924302892707
 
-printh("\n#### INIT ####\n")
-
 function dequantize(qw, scale)
 	return qw * scale
 end
@@ -18,7 +16,7 @@ function exp(x)
 end
 
 function sigmoid(x)
-	return 1 / (1 + exp(-x))
+	return x / (1 + abs(x))
 end
 
 -- Super simple dot product function
@@ -61,41 +59,16 @@ function softmax(x)
 	return result
 end
 
-PI = 3.14159
-
-function lanczos(x, a)
-	if x == 0 then
-		return 1
-	end
-	if -a <= x and x < a then
-		return a * sin(PI * x) * sin(PI * x / a) / (PI*PI * x*x)
-	end
-	return 0
-end
-
-function interpolate(input, a)
+-- Nearest neighbor interpolation
+-- Doesn't actually mimic the way the MNIST dataset is created but it seems to work fine? Lmk if there's a better way that doesn't compromise performance
+function interpolate(input)
 	local out = {}
 	for y=1,28 do
 		out[y] = {}
 		for x=1,28 do
-			local x_in = x * (112 / 28)
-			local y_in = y * (112 / 28)
-
-			local sum = 0
-			local weighted_sum = 0
-
-			for dx=-a+1,a do
-				for dy=-a+1,a do
-					local src_x = x_in + dx
-					local src_y = y_in + dy
-					if src_x >= 1 and src_x <= 112 and src_y >= 1 and src_y <= 112 then
-						local w = lanczos(x_in - src_x, a) * lanczos(y_in - src_y, a)
-						sum += input[src_y][src_x] * w
-						weighted_sum += w
-					end
-				end
-			end
-			out[y][x] = sum / weighted_sum
+			local src_x = flr(x*4)
+			local src_y = flr(y*4)
+			out[y][x] = input[src_y][src_x]
 		end
 	end
 	return out
@@ -110,7 +83,9 @@ function init_weights()
 			weights[i][row] = {}
 			for col=1, size[i] do
 				local num = @c
-				local real_num = ((num & 0b11110000) >> 4) | ((num & 0b1111) << 4)
+
+				-- dequantize
+				local real_num = (num << 4 & 0xf0) | (num >> 4 & 0x0f)
 				real_num = (real_num < 128) and real_num or (real_num - 256)
 				weights[i][row][col] = dequantize(real_num, scalew)
 				c += 1
@@ -126,7 +101,7 @@ function init_biases()
 		biases[i] = {}
 		for row=1, size[i+1] do
 			local num = @c
-			local real_num = ((num & 0b11110000) >> 4) | ((num & 0b1111) << 4)
+			local real_num = (num << 4 & 0xf0) | (num >> 4 & 0x0f)
 			real_num = (real_num < 128) and real_num or (real_num - 256)
 			biases[i][row] = dequantize(real_num, scaleb)
 			c += 1
@@ -159,6 +134,7 @@ function _init()
 	init_weights()
 	init_biases()
 	a = {}
+	drawn = {}
 	result = {}
 	click = false
 	btnpos = {0,0}
@@ -169,6 +145,9 @@ function _init()
 	a = {0,0,0,0,0,0,0,0,0,0}
 	cur_time = 0
 	time_spent = 0
+	g = {'g','u','e','s','s'}
+	flat = {}
+	printh("\n#### INIT ####\n")
 end
 
 function _update()
@@ -187,11 +166,10 @@ function _update()
 	if btnp(5) then
 		printh("\nnew guess\n")
 		local drawn = get_drawn()
-		local lanczosed = interpolate(drawn, 2)
-		local flat = {}
-		for i=1, #lanczosed do
-			for j=1, #lanczosed[i] do
-				flat[(i-1)*28+j] = lanczosed[i][j] / 7
+		local interpolated = interpolate(drawn)
+		for i=1, #interpolated do
+			for j=1, #interpolated[i] do
+				flat[(i-1)*28+j] = interpolated[i][j] / 7
 			end
 		end
 
@@ -199,23 +177,17 @@ function _update()
 		a = result[1]
 		sm = result[2]
 
-		for i=1, #sm do
-			printh(round_to_2(a[i]*100))
-		end
-
-		local max = get_idx_of_max(sm)
-		guess = max - 1
+		guess = get_idx_of_max(sm) - 1
 	end
 end
 
 function _draw()
 	cls()
 
-	local g = "guess"
 	for i=1, #g do
-		local c = sub(g, i, i)
-		print(c,116,(i-1)*6,7)
+		print(g[i],116,(i-1)*6,7)
 	end
+
 	-- colon
 	pset(116,31,7)
 	pset(118,31,7)
@@ -244,19 +216,19 @@ function _draw()
 	pset(btnpos[1], btnpos[2], 2)
 end
 
-function print_image(x)
-	for i,v in ipairs(x) do
-		local index = flr(#cols*v)
-		local color = cols[index]
-		local x = (i % 28)*4
-		local y = flr(i / 28)*4
-		for j=x,x+3 do
-			for k=y,y+3 do
-				pset(j, k, color)
-			end
-		end
-	end
-end
+-- function print_image(x)
+-- 	for i,v in ipairs(x) do
+-- 		local index = flr(#cols*v)
+-- 		local color = cols[index]
+-- 		local x = (i % 28)*4
+-- 		local y = flr(i / 28)*4
+-- 		for j=x,x+3 do
+-- 			for k=y,y+3 do
+-- 				pset(j, k, color)
+-- 			end
+-- 		end
+-- 	end
+-- end
 
 function get_idx_of_max(x)
 	local max = 1
@@ -273,8 +245,7 @@ function get_drawn()
 	for y=1, 28*4 do
 		arr[y] = {}
 		for x=1, 28*4 do
-			local col = pget(x,y)
-			arr[y][x] = col
+			arr[y][x] = pget(x,y)		
 		end
 	end
 	return arr
