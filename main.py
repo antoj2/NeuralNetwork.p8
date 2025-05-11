@@ -1,15 +1,17 @@
 import csv
 import warnings
 from collections.abc import Iterable
+from functools import partial
 from itertools import batched
+from typing import Tuple
 
 import jax
 import jax.numpy as jnp
-import numpy as np
-import pygame
-from jax import Array, random
 
-# from numpy.typing import NDArray
+import pandas as pd
+
+# import pygame
+from jax import Array, jit, random
 from PIL import Image
 
 # Inspred by 3blue1brown's series on neural networks
@@ -19,11 +21,13 @@ from PIL import Image
 warnings.simplefilter("error")
 
 
+@jit
 def sigmoid(x: Array) -> Array:
   return 1.0 / (1.0 + jnp.exp(-x))
 
 
 # Derivative of sigmoid function
+@jit
 def sigmoid_prime(x: Array) -> Array:
   sx = sigmoid(x)
   return sx * (1 - sx)
@@ -34,119 +38,120 @@ def quantize(x: float, scale: float) -> Array:
   return jnp.clip(jnp.round(x / scale), -127, 127)
 
 
-class NeuralNetwork:
-  weights: list[Array]
-  biases: list[Array]
-  eta: float
-  sizes: list[int]
+def init_params(key: Array, sizes: list[int]) -> tuple[list[Array], list[Array]]:
+  keys = random.split(key, 2 * (len(sizes) - 1))
+  biases = [
+    random.normal(keys[2 * i + 1], (sizes[i + 1],)) for i in range(len(sizes) - 1)
+  ]
+  weights = [
+    random.normal(keys[2 * i], (sizes[i + 1], sizes[i])) / jnp.sqrt(sizes[i])
+    for i in range(len(sizes) - 1)
+  ]
+  return weights, biases
 
-  def __init__(self, key: jax.Array, eta: float = 10):
-    self.sizes = [784, 10, 14, 10]
-    # 784 * 10 + 10 * 14 + 14 * 10 = 8120 weights,
-    # 10 + 14 + 10 = 34 biases
-    # which makes for 8154 parameters
 
-    # self.biases = [np.random.randn(y) for y in self.sizes[1:]]
-    # self.weights = [
-    #   np.random.randn(y, x) / np.sqrt(x)
-    #   for x, y in zip(self.sizes[:-1], self.sizes[1:])
-    # ]
-    keys = random.split(key, 2 * (len(self.sizes) - 1))
-    self.biases = [
-      random.normal(keys[2 * i + 1], (self.sizes[i + 1],))
-      for i in range(len(self.sizes) - 1)
-    ]
-    self.weights = [
-      random.normal(keys[2 * i], (self.sizes[i + 1], self.sizes[i]))
-      / jnp.sqrt(self.sizes[i])
-      for i in range(len(self.sizes) - 1)
-    ]
+@jit
+def backprop(
+  x: Array, y: Array, weights: list[Array], biases: list[Array], sizes: list[int]
+):
+  nabla_w = [jnp.zeros_like(w) for w in weights]
+  nabla_b = [jnp.zeros_like(b) for b in biases]
 
-    print(self.biases[0].shape)
+  activation = x
+  activations = [x]
+  zs: list[Array] = []
 
-    self.eta = eta
+  for w, b in zip(weights, biases):
+    z = jnp.dot(w, activation) + b
+    zs.append(z)
+    activation = sigmoid(z)
+    activations.append(activation)
 
-  def update(self, mini_batch: Iterable[list[str]], lmbda: float, batch_size: int):
-    nabla_w = [jnp.zeros_like(w) for w in self.weights]
-    nabla_b = [jnp.zeros_like(b) for b in self.biases]
+  delta = cost_derivative(activations[-1], y) * sigmoid_prime(zs[-1])
+  nabla_b[-1] = delta
+  nabla_w[-1] = jnp.outer(delta, activations[-2])
 
-    for row in mini_batch:
-      x = jnp.array([float(n) / 255 for n in row[1:]])
-      y = jnp.zeros(10).at[int(row[0])].set(1.0)
+  for layer in range(2, len(sizes)):
+    z = zs[-layer]
+    sp = sigmoid_prime(z)
+    delta: Array = jnp.dot(weights[-layer + 1].T, delta) * sp
+    nabla_b[-layer] = delta
+    nabla_w[-layer] = jnp.outer(delta, activations[-layer - 1])
 
-      delta_nabla_w, delta_nabla_b = self.backprop(x, y)
-      nabla_w = [nw + dnw for dnw, nw in zip(delta_nabla_w, nabla_w)]
-      nabla_b = [nb + dnb for dnb, nb in zip(delta_nabla_b, nabla_b)]
+  return (nabla_w, nabla_b)
 
-    # self.weights = [
-    #   (1 - self.eta * (lmbda / 60000)) * w - (self.eta / 10) * nw
-    #   for w, nw in zip(self.weights, nabla_w)
-    # ]
-    self.weights = [
-      w - (self.eta / batch_size) * nw for w, nw in zip(self.weights, nabla_w)
-    ]
-    self.biases = [
-      b - (self.eta / batch_size) * nb for b, nb in zip(self.biases, nabla_b)
-    ]
 
-  def backprop(self, x: Array, y: Array):
-    nabla_w = [jnp.zeros_like(w) for w in self.weights]
-    nabla_b = [jnp.zeros_like(b) for b in self.biases]
+@partial(
+  jit,
+  static_argnums=(
+    3,
+    4,
+    5,
+  ),
+)
+def update(
+  weights: list[Array],
+  biases: list[Array],
+  mini_batch: Array,
+  eta: float,
+  batch_size: int,
+  sizes: tuple[int, ...],
+) -> tuple[list[Array], list[Array]]:
+  def process_example(carry, row: Array):
+    nabla_w, nabla_b = carry
 
-    activation = x
-    activations = [x]
-    zs: list[Array] = []
+    x = row[1:] / 255
+    label = row[0].astype(jnp.int32)
+    y = jnp.zeros(10).at[label].set(1.0)
 
-    for w, b in zip(self.weights, self.biases):
-      z = jnp.dot(w, activation) + b
-      zs.append(z)
-      activation = sigmoid(z)
-      activations.append(activation)
+    delta_nabla_w, delta_nabla_b = backprop(x, y, weights, biases, sizes)
 
-    delta = self.cost_derivative(activations[-1], y) * sigmoid_prime(zs[-1])
-    nabla_b[-1] = delta
-    nabla_w[-1] = jnp.outer(delta, activations[-2])
+    new_nabla_w = [nw + dnw for dnw, nw in zip(delta_nabla_w, nabla_w)]
+    new_nabla_b = [nb + dnb for dnb, nb in zip(delta_nabla_b, nabla_b)]
 
-    for layer in range(2, len(self.sizes)):
-      z = zs[-layer]
-      sp = sigmoid_prime(z)
-      delta: Array = jnp.dot(self.weights[-layer + 1].T, delta) * sp
-      nabla_b[-layer] = delta
-      # nabla_w[-layer] = jnp.dot(
-      #   jnp.atleast_2d(delta).T, jnp.atleast_2d(activations[-layer - 1])
-      # )
-      nabla_w[-layer] = jnp.outer(delta, activations[-layer - 1])
+    return (new_nabla_w, new_nabla_b), None
 
-    return (nabla_w, nabla_b)
+  init_nabla_w = [jnp.zeros_like(w) for w in weights]
+  init_nabla_b = [jnp.zeros_like(b) for b in biases]
 
-  def feedforward(self, a: Array):
-    for b, w in zip(self.biases, self.weights):
-      a = sigmoid(jnp.dot(w, a) + b)
-    return a
+  (nabla_w, nabla_b), _ = jax.lax.scan(
+    process_example,
+    (init_nabla_w, init_nabla_b),
+    mini_batch,
+  )
 
-  @staticmethod
-  def cost_derivative(a: Array, y: Array) -> Array:
-    return a - y
+  new_weights = [w - (eta / batch_size) * nw for w, nw in zip(weights, nabla_w)]
+  new_biases = [b - (eta / batch_size) * nb for b, nb in zip(biases, nabla_b)]
+
+  return new_weights, new_biases
+
+
+@jit
+def cost_derivative(a: Array, y: Array) -> Array:
+  return a - y
 
 
 def main():
   print("Hello from nn!")
 
   key = random.key(42)
-  nn = NeuralNetwork(key, eta=8)
+  sizes = [784, 10, 14, 10]
+  size_tuple = tuple(sizes)
+  weights, biases = init_params(key, sizes)
 
   epochs = 30
-  batch_size = 64
+  batch_size = 128
 
-  with open("mnist_train.csv", "r") as csvfile:
-    for epoch in range(epochs):
-      print("Epoch:", epoch)
-      _ = csvfile.seek(0)
-      reader = csv.reader(csvfile)
-      mini_batches = batched(reader, batch_size)
-      for i, mini_batch in enumerate(mini_batches):
-        print("mini batch:", i)
-        nn.update(mini_batch, lmbda=0.1, batch_size=batch_size)
+  arr = jnp.asarray(pd.read_csv("mnist_train.csv").values)
+  print(arr.shape)
+
+  for epoch in range(epochs):
+    print("Epoch:", epoch)
+    mini_batches = batched(arr, batch_size)
+    for i, mini_batch in enumerate(mini_batches):
+      mini_batch = jnp.asarray(mini_batch)
+      print("mini batch:", i)
+      weights, biases = update(weights, biases, mini_batch, 8, batch_size, size_tuple)
 
   accuracy = 0
 
@@ -289,14 +294,15 @@ def main():
   # pygame.quit()
 
 
-def get_surface_array(screen: pygame.Surface):
-  data = pygame.surfarray.array3d(screen)
-  data = np.transpose(data, (1, 0, 2))
-  img = Image.fromarray(data)
-  img = img.convert("L")
-  img = img.resize((28, 28), Image.Resampling.LANCZOS)
-  img_array = np.asarray(img).ravel()
-  return img_array
+# def get_surface_array(screen: pygame.Surface):
+#   data = pygame.surfarray.array3d(screen)
+#   data = np.transpose(data, (1, 0, 2))
+#   img = Image.fromarray(data)
+#   img = img.convert("L")
+#   img = img.resize((28, 28), Image.Resampling.LANCZOS)
+#   img_array = np.asarray(img).ravel()
+#   return img_array
+#
 
 
 def print_img(x: Array):
