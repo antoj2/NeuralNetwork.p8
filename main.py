@@ -1,9 +1,9 @@
 import csv
 import warnings
-from collections.abc import Iterable
 from itertools import batched
 
 import numpy as np
+import pandas as pd
 import pygame
 from numpy.typing import NDArray
 from PIL import Image
@@ -15,12 +15,12 @@ np.set_printoptions(suppress=True, threshold=np.inf)
 warnings.simplefilter("error")
 
 
-def sigmoid(x: NDArray[np.float64]) -> NDArray[np.float64]:
+def sigmoid(x: NDArray[np.float32]) -> NDArray[np.float32]:
   return 1.0 / (1.0 + np.exp(-x))
 
 
 # Derivative of sigmoid function
-def sigmoid_prime(x: NDArray[np.float64]) -> NDArray[np.float64]:
+def sigmoid_prime(x: NDArray[np.float32]) -> NDArray[np.float32]:
   return sigmoid(x) * (1 - sigmoid(x))
 
 
@@ -29,16 +29,8 @@ def quantize(x: float, scale: float) -> np.int8:
 
 
 class NeuralNetwork:
-  weights: list[NDArray[np.float64]] = [
-    np.zeros((10, 784)),
-    np.zeros((14, 10)),
-    np.zeros((10, 14)),
-  ]
-  biases: list[NDArray[np.float64]] = [
-    np.zeros(10),
-    np.zeros(14),
-    np.zeros(10),
-  ]
+  weights: list[NDArray[np.float32]] = []
+  biases: list[NDArray[np.float32]] = []
   eta: float = 0
   sizes: list[int] = []
 
@@ -48,9 +40,9 @@ class NeuralNetwork:
     # 10 + 14 + 10 = 34 biases
     # which makes for 8154 parameters
 
-    self.biases = [np.random.randn(y) for y in self.sizes[1:]]
+    self.biases = [np.random.randn(y).astype(np.float32) for y in self.sizes[1:]]
     self.weights = [
-      np.random.randn(y, x) / np.sqrt(x)
+      np.random.randn(y, x).astype(np.float32) / np.sqrt(x)
       for x, y in zip(self.sizes[:-1], self.sizes[1:])
     ]
 
@@ -58,29 +50,19 @@ class NeuralNetwork:
 
     self.eta = eta
 
-  def update(self, mini_batch: Iterable[list[str]], lmbda: float):
-    nabla_w = [np.zeros(w.shape) for w in self.weights]
-    nabla_b = [np.zeros(b.shape) for b in self.biases]
+  def update(self, mini_batch: NDArray[np.float32], batch_size: int):
+    nabla_w = [np.zeros_like(w) for w in self.weights]
+    nabla_b = [np.zeros_like(b) for b in self.biases]
 
-    rng = np.random.default_rng()
-    shuffled = list(mini_batch)
-    rng.shuffle(shuffled)
-
-    batch_size = len(shuffled)
-
-    for row in shuffled:
-      x = np.array([float(n) / 255 for n in row[1::]], dtype=np.float64)
-      y = np.zeros(10, dtype=np.float64)
+    for row in mini_batch:
+      x = np.array([n / 255 for n in row[1::]], dtype=np.float32)
+      y = np.zeros(10, dtype=np.float32)
       y[int(row[0])] = 1.0
 
       delta_nabla_w, delta_nabla_b = self.backprop(x, y)
       nabla_w = [nw + dnw for dnw, nw in zip(delta_nabla_w, nabla_w)]
       nabla_b = [nb + dnb for dnb, nb in zip(delta_nabla_b, nabla_b)]
 
-    # self.weights = [
-    #   (1 - self.eta * (lmbda / 60000)) * w - (self.eta / 10) * nw
-    #   for w, nw in zip(self.weights, nabla_w)
-    # ]
     self.weights = [
       w - (self.eta / batch_size) * nw for w, nw in zip(self.weights, nabla_w)
     ]
@@ -88,46 +70,44 @@ class NeuralNetwork:
       b - (self.eta / batch_size) * nb for b, nb in zip(self.biases, nabla_b)
     ]
 
-  def backprop(self, x: NDArray[np.float64], y: NDArray[np.float64]):
-    nabla_w: list[NDArray[np.float64]] = [np.zeros(w.shape) for w in self.weights]
-    nabla_b = [np.zeros(b.shape) for b in self.biases]
+  def backprop(self, x: NDArray[np.float32], y: NDArray[np.float32]):
+    nabla_w: list[NDArray[np.float32]] = [np.zeros_like(w) for w in self.weights]
+    nabla_b = [np.zeros_like(b) for b in self.biases]
 
     activation = x
     activations = [x]
-    zs: list[NDArray[np.float64]] = []
+    zs: list[NDArray[np.float32]] = []
 
     for w, b in zip(self.weights, self.biases):
-      z: NDArray[np.float64] = np.dot(w, activation) + b
+      z: NDArray[np.float32] = np.dot(w, activation) + b
       zs.append(z)
-      activation: NDArray[np.float64] = sigmoid(z)
+      activation: NDArray[np.float32] = sigmoid(z)
       activations.append(activation)
 
     delta = self.cost_derivative(activations[-1], y) * sigmoid_prime(zs[-1])
     nabla_b[-1] = delta
-    nabla_w[-1] = np.dot(np.atleast_2d(delta).T, np.atleast_2d(activations[-2]))
+    nabla_w[-1] = np.outer(delta, activations[-2])
 
     for layer in range(2, len(self.sizes)):
       z = zs[-layer]
       sp = sigmoid_prime(z)
-      delta: NDArray[np.float64] = np.dot(self.weights[-layer + 1].T, delta) * sp
+      delta: NDArray[np.float32] = np.dot(self.weights[-layer + 1].T, delta) * sp
       nabla_b[-layer] = delta
-      nabla_w[-layer] = np.dot(
-        np.atleast_2d(delta).T, np.atleast_2d(activations[-layer - 1])
-      )
+      nabla_w[-layer] = np.outer(delta, activations[-layer - 1])
 
     # print_results(activations[-1], y)
 
     return (nabla_w, nabla_b)
 
-  def feedforward(self, a: NDArray[np.float64]):
+  def feedforward(self, a: NDArray[np.float32]):
     for b, w in zip(self.biases, self.weights):
       a = sigmoid(np.dot(w, a) + b)
     return a
 
   @staticmethod
   def cost_derivative(
-    a: NDArray[np.float64], y: NDArray[np.float64]
-  ) -> NDArray[np.float64]:
+    a: NDArray[np.float32], y: NDArray[np.float32]
+  ) -> NDArray[np.float32]:
     return a - y
 
 
@@ -137,32 +117,37 @@ def main():
   nn = NeuralNetwork(eta=8)
 
   epochs = 30
+  data = np.asarray(
+    pd.read_csv("mnist_train.csv", header=None).values, dtype=np.float32
+  )
+  batch_size = 64
 
-  with open("mnist_train.csv", "r") as csvfile:
-    for epoch in range(epochs):
-      print("Epoch:", epoch)
-      _ = csvfile.seek(0)
-      reader = csv.reader(csvfile)
-      mini_batches = batched(reader, 64)
-      for i, mini_batch in enumerate(mini_batches):
-        print("mini batch:", i)
-        nn.update(mini_batch, lmbda=0.1)
+  for epoch in range(epochs):
+    print("Epoch:", epoch)
+    np.random.shuffle(data)
+    mini_batches = batched(data, batch_size)
+    for i, mini_batch in enumerate(mini_batches):
+      print("mini batch:", i)
+      mini_batch = np.asarray(mini_batch, dtype=np.float32)
+      nn.update(mini_batch, batch_size)
 
   accuracy = 0
 
   print("Training done.")
 
-  with open("mnist_test.csv", "r") as csvfile:
-    reader = csv.reader(csvfile)
-    for test in reader:
-      print("\n### TEST ###\n")
-      x = np.array([float(n) / 255 for n in test[1::]], dtype=np.float64)
-      a = nn.feedforward(x)
-      y = np.zeros(10, dtype=np.float64)
-      y[int(test[0])] = 1.0
-      print_results(a, y)
-      print_img(x)
-      accuracy += np.argmax(a) == int(test[0])
+  test_data = np.asarray(
+    pd.read_csv("mnist_test.csv", header=None).values, dtype=np.float32
+  )
+
+  for test in test_data:
+    print("\n### TEST ###\n")
+    x = np.array([float(n) / 255 for n in test[1::]], dtype=np.float32)
+    a = nn.feedforward(x)
+    y = np.zeros(10, dtype=np.float32)
+    y[int(test[0])] = 1.0
+    print_results(a, y)
+    print_img(x)
+    accuracy += np.argmax(a) == int(test[0])
 
   print("\n### TEST RESULTS ###\n")
   print(f"Accuracy: {accuracy / 10000 * 100}%")
@@ -198,24 +183,24 @@ def main():
   print(nn.weights[0])
   print(nn.biases[0])
 
-  nn.weights = [layer.astype(np.float64) * scalew for layer in new_weights]
-  nn.biases = [layer.astype(np.float64) * scaleb for layer in new_biases]
+  nn.weights = [layer.astype(np.float32) * scalew for layer in new_weights]
+  nn.biases = [layer.astype(np.float32) * scaleb for layer in new_biases]
 
   new_accuracy = 0
 
   with open("mnist_test.csv", "r") as csvfile:
     reader = csv.reader(csvfile)
     for test in reader:
-      x = np.array([float(n) / 255 for n in test[1::]], dtype=np.float64)
+      x = np.array([float(n) / 255 for n in test[1::]], dtype=np.float32)
       a = nn.feedforward(x)
-      y = np.zeros(10, dtype=np.float64)
+      y = np.zeros(10, dtype=np.float32)
       y[int(test[0])] = 1.0
       new_accuracy += np.argmax(a) == int(test[0])
 
   print("\n### QUANTIZED TEST RESULTS ###\n")
   print(f"Accuracy: {new_accuracy / 10000 * 100}%")
 
-  with open("untitled.p8", "r") as f:
+  with open("neuralnetwork.p8", "r") as f:
     data = f.readlines()
 
   data[6] = f"scalew = {scalew}\n"
@@ -227,10 +212,10 @@ def main():
   print("Flattened weights shape:", flattened.shape)
 
   # print("Flattened weights shape:", flattened)
-  with open("untitled.p8", "w") as f:
+  with open("neuralnetwork.p8", "w") as f:
     _ = f.writelines(data)
 
-  with open("untitled.p8", "a") as f:
+  with open("neuralnetwork.p8", "a") as f:
     _ = f.truncate(f.tell() - 16437)
     for i, p in enumerate(flattened):
       if i % 64 == 0:
@@ -299,7 +284,7 @@ def get_surface_array(screen: pygame.Surface):
   return img_array
 
 
-def print_img(x: NDArray[np.float64]):
+def print_img(x: NDArray[np.float32]):
   """Expects a 1D array of 784 elements (28x28 pixels) with values between 0 and 1,
   representing a grayscale image."""
   for row in batched(np.atleast_1d(x), 28):
@@ -311,7 +296,7 @@ def print_img(x: NDArray[np.float64]):
     print()
 
 
-def print_results(x: NDArray[np.float64], y: NDArray[np.float64] | None = None):
+def print_results(x: NDArray[np.float32], y: NDArray[np.float32] | None = None):
   data = [np.arange(10), np.round(x, 2)]
   if y is not None:
     data.insert(1, y)
